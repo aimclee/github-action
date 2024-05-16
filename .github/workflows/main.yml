@@ -1,0 +1,59 @@
+name: release-on-jira-when-git-tag-pushed
+on:
+  push:
+    tags:
+      - "*"
+
+jobs:
+  jira-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: "0"
+
+      - name: Extract Jira Tickets
+        shell: bash
+        run: |
+
+          git fetch --tags origin "+refs/tags/*:refs/tags/*" ":refs/tags/${{ github.ref }}"
+
+          # get current version from added git tag starting from 'v' or 'r'
+          current_version=${{ github.ref_name }}
+          if [[ "${{ github.ref_name }}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            version=${current_version#v}
+            prefix="v"
+          elif [[ "${{ github.ref_name }}" =~ ^r[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            version=${current_version#r}
+            prefix="r"
+          else
+            echo "Error: The tag name does not follow the expected format."
+            exit 1
+          fi
+
+          # get version right before the current version (PEVIOUS_VERSION)
+          IFS='.' read -r major minor patch <<< "$version"
+          ((patch--))
+          PEVIOUS_VERSION="$prefix$major.$minor.$patch"
+
+          # filter commit messages and get Jira Ticket numbers.
+          RELEASE_NAME="${{ github.ref_name }}"
+          FILTERED_COMMIT_MESSAGE=$(git log --pretty=format:"%s" $PEVIOUS_VERSION..${{ github.ref_name }} | grep "CRM-" || true) # "CRM-" is a keyword that should be contained in commit messages.
+          COMMIT_MESSAGE=$(echo "$FILTERED_COMMIT_MESSAGE" | sed -E 's/.+:/-/g' | sed 's/$/\\n/' | tr -d '\n' | tr -d '\b')
+          TICKET_NUMBERS=$(echo "$FILTERED_COMMIT_MESSAGE" | grep -o 'CRM\-[0-9]\+' || true) # CRM is a Jira project key
+          JIRA_TICKETS=$(echo "$TICKET_NUMBERS" | sort -u | paste -sd "," -)
+
+          # save extracted jira tickets to github env
+          echo "JIRA_TICKETS=$JIRA_TICKETS" >> $GITHUB_ENV
+
+      - name: Create Jira Release
+        uses: armona/jira-release-actions@v2.0.6
+        with:
+          create: true
+          email: "dhy04057@gmail.com" # user email
+          api_token: ${{ secrets.JIRA_TOKEN }} # manage here : https://id.atlassian.com/manage-profile/security/api-tokens
+          subdomain: "subdomain"
+          jira_project: "10016" # jira project id : https://subdomain.atlassian.net/rest/api/3/project 
+          tickets: ${{ env.JIRA_TICKETS }} 
+          release_name: ${{ github.ref_name }}
